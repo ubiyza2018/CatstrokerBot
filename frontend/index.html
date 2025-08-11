@@ -1,1 +1,179 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="viewport-fit=cover, width=device-width, initial-scale=1, user-scalable=no" />
+  <title>Catstroker</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main>
+    <h1>😺 Catstroker</h1>
+    <div id="cat-wrap">
+      <img id="cat" src="https://placekitten.com/360/360" alt="котик" />
+    </div>
 
+    <div id="stats">
+      <div>Мурчики: <b id="purrs">0</b></div>
+      <div>Энергия: <b id="energy">0</b>/<b id="max_energy">0</b></div>
+      <div>За ласку: <b id="per">1</b> • Пассив: <b id="passive">0</b>/мин</div>
+    </div>
+
+    <div class="buttons">
+      <button id="stroke">Гладить 🐾</button>
+      <button id="daily">🎁 Ежедневный бонус</button>
+      <button id="shop">🛒 Магазин</button>
+      <button id="top">🏆 Топ-10</button>
+    </div>
+
+    <div id="shop-panel" class="panel hidden">
+      <h3>Магазин</h3>
+      <div class="item" data-key="paw_glove">Перчатка любви — больше мурчиков</div>
+      <div class="item" data-key="cloud_pillow">Подушка из облаков — больше энергии</div>
+      <div class="item" data-key="purr_modulator">Мурчикофон — пассивный доход</div>
+      <button id="close-shop">Закрыть</button>
+    </div>
+
+    <div id="log"></div>
+  </main>
+
+  <script>
+    const tg = window.Telegram?.WebApp;
+    if (tg) {
+      tg.expand();
+      tg.ready();
+      // автотема
+      document.documentElement.style.setProperty("--tg-bg", tg.themeParams.bg_color || "#fff0f5");
+      document.documentElement.style.setProperty("--tg-text", tg.themeParams.text_color || "#2c2c2c");
+    }
+
+    const BACKEND = (new URL(document.location)).searchParams.get("api") || "%BACKEND_PLACEHOLDER%";
+    let serverToken = null;
+    let state = null;
+    let strokeQueue = 0;
+    let busy = false;
+
+    const $ = (id) => document.getElementById(id);
+    function setState(s) {
+      state = s;
+      $("purrs").innerText = s.purrs;
+      $("energy").innerText = s.energy;
+      $("max_energy").innerText = s.max_energy;
+      $("per").innerText = s.per_stroke;
+      $("passive").innerText = s.passive_per_min;
+    }
+    function log(msg) {
+      const el = document.createElement("div");
+      el.textContent = msg;
+      $("log").prepend(el);
+    }
+
+    async function auth() {
+      if (!tg) { alert("Открой в Telegram"); return; }
+      const initData = tg.initData;
+      const res = await fetch(`${BACKEND}/api/auth`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ initData })
+      });
+      if (!res.ok) {
+        log("Ошибка авторизации");
+        return;
+      }
+      const data = await res.json();
+      serverToken = data.token;
+    }
+
+    async function fetchState() {
+      const res = await fetch(`${BACKEND}/api/state`, {
+        headers: {Authorization: `Bearer ${serverToken}`}
+      });
+      if (res.ok) setState(await res.json());
+    }
+
+    async function sendStrokes(n) {
+      if (!serverToken) return;
+      if (busy) return;
+      busy = true;
+      try {
+        const res = await fetch(`${BACKEND}/api/stroke`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${serverToken}` },
+          body: JSON.stringify({ strokes: n })
+        });
+        if (res.ok) {
+          const s = await res.json();
+          setState(s);
+        }
+      } finally {
+        busy = false;
+      }
+    }
+
+    async function claimDaily() {
+      const res = await fetch(`${BACKEND}/api/daily`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${serverToken}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setState(data.state);
+        log(`🎁 +${data.reward} мурчиков`);
+      } else {
+        const t = await res.text();
+        log("Ещё рано для бонуса");
+      }
+    }
+
+    async function buyUpgrade(key) {
+      const res = await fetch(`${BACKEND}/api/upgrade`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${serverToken}` },
+        body: JSON.stringify({ key })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setState(data.state);
+        log(`Куплено: ${data.upgrade.key} ур.${data.upgrade.level}`);
+      } else {
+        log("Не хватает мурчиков или MAX");
+      }
+    }
+
+    $("stroke").addEventListener("click", () => {
+      strokeQueue++;
+      // отправляем пачками для скорости
+      if (strokeQueue >= 3) {
+        sendStrokes(strokeQueue);
+        strokeQueue = 0;
+      } else {
+        // небольшая задержка буфера
+        clearTimeout(window._qTimer);
+        window._qTimer = setTimeout(() => {
+          sendStrokes(strokeQueue);
+          strokeQueue = 0;
+        }, 120);
+      }
+      // маленькая анимация
+      $("cat").classList.add("pulse");
+      setTimeout(() => $("cat").classList.remove("pulse"), 120);
+    });
+
+    $("daily").addEventListener("click", claimDaily);
+    $("shop").addEventListener("click", () => $("shop-panel").classList.remove("hidden"));
+    $("close-shop").addEventListener("click", () => $("shop-panel").classList.add("hidden"));
+    document.querySelectorAll("#shop-panel .item").forEach(el => {
+      el.addEventListener("click", () => buyUpgrade(el.dataset.key));
+    });
+
+    // Инициализация
+    (async () => {
+      // Вставь свой URL backend в сборке (замени %BACKEND_PLACEHOLDER%)
+      await auth();
+      await fetchState();
+      // Периодически обновляем состояние (пассив и реген)
+      setInterval(fetchState, 4000);
+    })();
+  </script>
+</body>
+</html>
